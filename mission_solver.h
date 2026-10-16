@@ -2,9 +2,9 @@
 #include <vector>
 
 class MissionSolver {
+  public:
   constexpr static int kInf = 1000000000;
 
-public:
   struct Edge {
     int from;
     int to;
@@ -43,18 +43,16 @@ private:
   };
 
 public:
-  explicit MissionSolver(const Request* start_graph)
-      : request_(start_graph) {
-  }
+  explicit MissionSolver(const Request* start_graph);
   MissionSolver() = default;
 
-  auto ChangeRequest(const Request* start_graph) -> void {
-    request_ = start_graph;
-  }
+  auto ChangeRequest(const Request* start_graph) -> void;
 
   auto CheckMission() const -> Response;
 
 private:
+  auto CheckRequest() const -> bool;
+
   auto CountArtifacts() const -> int;
 
   auto TransformFromMask(int mask) const -> std::pair<int, int>;

@@ -9,6 +9,81 @@ auto IsSubmask(int mask1, int mask2) -> bool {
 }
 }  // namespace
 
+MissionSolver::MissionSolver(const Request* start_graph)
+    : request_(start_graph) {
+  bool check = CheckRequest();
+  if (!check) {
+    throw std::runtime_error("Invalid request");
+  }
+}
+
+auto MissionSolver::ChangeRequest(const Request* start_graph) -> void {
+  auto old_request = request_;
+  request_ = start_graph;
+  bool check = CheckRequest();
+  if (!check) {
+    request_ = old_request;
+    throw std::runtime_error("Invalid request");
+  }
+}
+auto MissionSolver::CheckRequest() const -> bool {
+  if (request_ == nullptr) {
+    return true;
+  }
+
+  const int k_max_artifacts = 20;
+  const int k_max_states = 1 << 24;
+  const int k_max_time = kInf / 4;
+
+  const int count_nodes = request_->count_nodes;
+  const int count_artifacts = static_cast<int>(request_->artifacts.size());
+  auto is_node = [count_nodes](int node) { return 0 <= node && node < count_nodes; };
+  auto is_time = [k_max_time](int time) { return -k_max_time <= time && time <= k_max_time; };
+
+  if (count_nodes <= 0 || !is_node(request_->start_node)) {
+    return false;
+  }
+  if (count_artifacts > k_max_artifacts || count_nodes > k_max_states / (1 << count_artifacts)) {
+    return false;
+  }
+  if (!is_time(request_->t_lim) || request_->t_cost <= 0) {
+    return false;
+  }
+
+  for (auto node : request_->finish_nodes) {
+    if (!is_node(node)) {
+      return false;
+    }
+  }
+
+  for (const auto& edge : request_->edges) {
+    if (!is_node(edge.from) || !is_node(edge.to)) {
+      return false;
+    }
+    if (edge.time < 0 || edge.time > k_max_time) {
+      return false;
+    }
+    if (edge.deadline != kInf && !is_time(edge.deadline)) {
+      return false;
+    }
+    if (edge.mask_artifacts < 0 || edge.mask_artifacts >= (1 << count_artifacts)) {
+      return false;
+    }
+  }
+
+  for (const auto& artifact : request_->artifacts) {
+    const auto [from, to] = artifact.time_available;
+    if (!is_node(artifact.node)) {
+      return false;
+    }
+    if ((from != -kInf && !is_time(from)) || (to != kInf && !is_time(to)) || from > to) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 auto MissionSolver::CountArtifacts() const -> int {
   return request_->artifacts.size();
 }
@@ -155,7 +230,7 @@ auto MissionSolver::CheckMission() const -> Response {
       });
     }
     for (size_t i = 0; i < request_->artifacts.size(); i++) {
-      auto artifact = request_->artifacts[i];
+      const auto& artifact = request_->artifacts[i];
       if (IsSubmask(1 << i, state)) {
         continue;
       }
