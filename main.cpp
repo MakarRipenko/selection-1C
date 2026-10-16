@@ -17,7 +17,7 @@ struct Artifact {
   int id;
   int node;
   int cost;
-  std::pair<int, int> time_available = {-kInf, -kInf};
+  std::pair<int, int> time_available = {-kInf, kInf};
 };
 
 struct State {
@@ -39,7 +39,7 @@ struct Response {
 struct Edge2 {
   int to;
   int time;
-  std::pair<int, int> time_available = {-kInf, -kInf};
+  std::pair<int, int> time_available = {-kInf, kInf};
 };
 
 auto TransformFromMask(int mask, int count_artifacts) -> std::pair<int, int> {
@@ -57,12 +57,10 @@ auto IsSubmask(int mask1, int mask2) -> bool {
   return (mask1 & mask2) == mask1;
 }
 
-auto Dijkstra(const std::vector<std::vector<Edge2>>& graph, int start_time, const State& start_graph)
-    -> std::pair<std::vector<int>, int> {
+auto Dijkstra(const std::vector<std::vector<Edge2>>& graph, int start_state, int start_time, const State& start_graph)
+    -> std::vector<int> {
   int count_artifacts = start_graph.artifacts.size();
   std::vector<int> dist(graph.size(), kInf);
-  int min_delta = kInf;
-  int start_state = TransformToMask(start_graph.start_node, 0, count_artifacts);
   dist[start_state] = start_time;
   std::priority_queue<std::pair<int, int>> q;
   q.push({-dist[start_state], start_state});
@@ -77,11 +75,6 @@ auto Dijkstra(const std::vector<std::vector<Edge2>>& graph, int start_time, cons
       int u = edge.to;
 
       if (dist[v] + edge.time > edge.time_available.second) {
-        min_delta = std::min(min_delta, dist[v] + edge.time - edge.time_available.second);
-        continue;
-      }
-      if (dist[v] + edge.time > start_graph.t_lim) {
-        min_delta = std::min(min_delta, dist[v] + edge.time - start_graph.t_lim);
         continue;
       }
 
@@ -93,13 +86,54 @@ auto Dijkstra(const std::vector<std::vector<Edge2>>& graph, int start_time, cons
     }
   }
 
-  for (auto& d : dist) {
-    if (d > start_graph.t_lim) {
-      d = kInf;
+  return dist;
+}
+
+auto CalculatePosibleStartTimes(const std::vector<std::vector<Edge2>>& graph, const State& start_graph)
+    -> std::vector<int> {
+
+  int count_artifacts = start_graph.artifacts.size();
+  std::vector<std::vector<Edge2>> reverse_graph(graph.size());
+  for (int i = 0; i < graph.size(); i++) {
+    for (const auto& edge : graph[i]) {
+      int first = edge.time_available.second == kInf ? -kInf : edge.time - edge.time_available.second;
+      int second = edge.time_available.first == -kInf ? kInf : edge.time - edge.time_available.first;
+      std::pair<int, int> new_avalible = {first, second};
+
+      reverse_graph[edge.to].push_back({i, edge.time, new_avalible});
     }
   }
 
-  return {dist, min_delta};
+  std::unordered_set<int> start_times;
+
+  for (int i = 0; i < graph.size(); i++) {
+    for (auto& edge : graph[i]) {
+      if (edge.time_available.second == kInf) {
+        continue;
+      }
+      auto dist = Dijkstra(reverse_graph, i, edge.time - edge.time_available.second, start_graph);
+
+      int res = dist[TransformToMask(start_graph.start_node, 0, count_artifacts)];
+      if (res > 0 && res != kInf) {
+        start_times.insert(-res);
+      }
+    }
+  }
+
+  for (int finish_node : start_graph.finish_nodes) {
+    for (int mask = 0; mask < (1 << count_artifacts); ++mask) {
+      int finish_state = TransformToMask(finish_node, mask, count_artifacts);
+      auto dist = Dijkstra(reverse_graph, finish_state, -start_graph.t_lim, start_graph);
+
+      int res = dist[TransformToMask(start_graph.start_node, 0, count_artifacts)];
+      if (res > 0 && res != kInf) {
+        start_times.insert(-res);
+      }
+    }
+  }
+
+  start_times.insert(0);
+  return std::vector<int>(start_times.begin(), start_times.end());
 }
 
 void RecalculateResponse(Response& response, const std::vector<int>& dist, int cur_start_time,
@@ -108,20 +142,26 @@ void RecalculateResponse(Response& response, const std::vector<int>& dist, int c
   double max_profit = -kInf;
   std::unordered_set<int> finish_nodes(start_graph.finish_nodes.begin(), start_graph.finish_nodes.end());
   for (int i = 0; i < dist.size(); i++) {
-    int real_dist = dist[i] + ((cur_start_time < 0) ? -cur_start_time : 0);
-    auto [node, mask_artifacts] = TransformFromMask(i, start_graph.artifacts.size());
-    if (!finish_nodes.contains(node) || dist[i] == kInf) {
+    if (dist[i] == kInf) {
       continue;
     }
-    min_time = std::min(min_time, dist[i]);
+    int real_dist = dist[i] + ((cur_start_time < 0) ? -2 * cur_start_time : 0);
+    if (dist[i] > start_graph.t_lim) {
+      continue;
+    }
+    auto [node, mask_artifacts] = TransformFromMask(i, start_graph.artifacts.size());
+    if (!finish_nodes.contains(node)) {
+      continue;
+    }
+    min_time = std::min(min_time, real_dist);
 
     int cost = 0;
     for (int artifact = 0; artifact < start_graph.artifacts.size(); ++artifact) {
       if (mask_artifacts & (1 << artifact)) {
-        cost += start_graph.artifacts[artifact - 1].cost;
+        cost += start_graph.artifacts[artifact].cost;
       }
     }
-    max_profit = std::max(max_profit, cost - 1.0 * dist[i] / start_graph.t_cost);
+    max_profit = std::max(max_profit, cost - 1.0 * real_dist / start_graph.t_cost);
   }
 
   if (min_time != kInf) {
@@ -158,19 +198,41 @@ auto CheckMission(const State& start_graph) -> Response {
   }
 
   Response response;
+  for (const auto& start_time : CalculatePosibleStartTimes(graph, start_graph)) {
+    auto dist = Dijkstra(graph, TransformToMask(start_graph.start_node, 0, count_artifacts), start_time, start_graph);
 
-  int cur_start_time = 0;
-  int cur_delta = 0;
-  while (cur_delta != kInf && -cur_start_time <= start_graph.t_lim) {
-    auto [dist, delta] = Dijkstra(graph, cur_start_time, start_graph);
-    cur_start_time -= delta;
-    cur_delta = delta;
-
-    RecalculateResponse(response, dist, cur_start_time, start_graph);
+    RecalculateResponse(response, dist, start_time, start_graph);
   }
 
   return response;
 }
 
 int main() {
+  State example{
+      .count_nodes = 5,
+      .start_node = 0,
+      .edges =
+          {
+              {0, 1, 5},
+              {1, 2, 20},
+              {2, 0, 10, kInf, 1 << 1},
+              {0, 4, 0, kInf, 1 << 1},
+              {0, 3, 20},
+              {3, 1, 10},
+              {3, 2, 5},
+          },
+      .artifacts =
+          {
+              {0, 3, 2, {0, 10}},
+              {1, 1, 2, {30, 40}},
+              {2, 4, 8, {0, 80}},
+          },
+      .finish_nodes = {3, 4},
+      .t_lim = 120,
+      .t_cost = 10,
+  };
+
+  auto response = CheckMission(example);
+  std::cout << response.is_feasible << " " << response.min_time << " " << response.max_profit << std::endl;
+  return 0;
 }
